@@ -42,8 +42,7 @@ export async function proxy(request: NextRequest) {
       return NextResponse.redirect(url);
     }
   } catch {
-    // If auth check fails, allow the request to continue.
-    // Pages protect themselves via useAuth() on the client.
+    // Auth check failed — deny by default (fail-closed).
     if (!isAuthPage) {
       const url = request.nextUrl.clone();
       url.pathname = '/login';

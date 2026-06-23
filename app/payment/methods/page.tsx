@@ -33,11 +33,32 @@ export default function PaymentMethodsPage() {
       .catch(() => { setError('Failed to load payment methods.'); setLoading(false); });
   }, []);
 
+  const ALLOWED_PAYMENT_HOSTS = ['apitest.myfatoorah.com', 'api.myfatoorah.com'];
+
+  const isSafePaymentUrl = (url: string) => {
+    try {
+      const parsed = new URL(url);
+      return parsed.protocol === 'https:' && ALLOWED_PAYMENT_HOSTS.includes(parsed.hostname);
+    } catch {
+      return false;
+    }
+  };
+
+  const isSafeImageUrl = (url: string) => {
+    try {
+      const parsed = new URL(url);
+      return parsed.protocol === 'https:' && parsed.hostname.endsWith('myfatoorah.com');
+    } catch {
+      return false;
+    }
+  };
+
   const handlePay = async (methodId: number) => {
     setPaying(methodId);
     try {
       const { data, error } = await supabase.functions.invoke('checkout', { body: { methodId } });
-      if (error || data?.error) throw new Error(data?.error ?? error?.message ?? 'Checkout failed');
+      if (error || data?.error) throw new Error('Checkout failed. Please try again.');
+      if (!isSafePaymentUrl(data.paymentUrl)) throw new Error('Invalid payment URL received.');
       window.location.href = data.paymentUrl;
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong');
@@ -79,12 +100,15 @@ export default function PaymentMethodsPage() {
             >
               <div className="flex items-center gap-3">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={m.ImageUrl}
-                  alt={m.PaymentMethodEn}
-                  className="h-8 w-16 object-contain"
-                  onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                />
+                {isSafeImageUrl(m.ImageUrl) && (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={m.ImageUrl}
+                    alt={m.PaymentMethodEn}
+                    className="h-8 w-16 object-contain"
+                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                  />
+                )}
                 <span className="font-medium text-slate-800 group-hover:text-indigo-700">
                   {m.PaymentMethodEn}
                 </span>

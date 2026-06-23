@@ -18,12 +18,18 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const [attempts, setAttempts] = useState(0);
+  const [lockedUntil, setLockedUntil] = useState<number | null>(null);
 
   const validate = () => {
+    if (lockedUntil && Date.now() < lockedUntil) {
+      const secs = Math.ceil((lockedUntil - Date.now()) / 1000);
+      return `Too many failed attempts. Try again in ${secs} seconds.`;
+    }
     if (!email.trim()) return 'Email is required';
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return 'Enter a valid email address';
     if (!password) return 'Password is required';
-    if (mode === 'register' && password.length < 6) return 'Password must be at least 6 characters';
+    if (mode === 'register' && password.length < 12) return 'Password must be at least 12 characters';
     return null;
   };
 
@@ -39,11 +45,19 @@ export default function LoginPage() {
     if (mode === 'login') {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) {
-        setError(error.message === 'Invalid login credentials'
-          ? 'Incorrect email or password. Please try again.'
-          : error.message);
+        const newAttempts = attempts + 1;
+        setAttempts(newAttempts);
+        if (newAttempts >= 5) {
+          setLockedUntil(Date.now() + 60_000);
+          setAttempts(0);
+          setError('Too many failed attempts. Please wait 60 seconds before trying again.');
+        } else {
+          setError('Incorrect email or password. Please try again.');
+        }
         setLoading(false);
       } else {
+        setAttempts(0);
+        setLockedUntil(null);
         router.push('/');
         router.refresh();
       }
@@ -155,7 +169,7 @@ export default function LoginPage() {
                 <input
                   type={showPassword ? 'text' : 'password'}
                   autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-                  placeholder={mode === 'register' ? 'Min. 6 characters' : '••••••••'}
+                  placeholder={mode === 'register' ? 'Min. 12 characters' : '••••••••'}
                   value={password}
                   onChange={(e) => { setPassword(e.target.value); setError(''); }}
                   className="w-full pl-10 pr-10 py-2.5 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent hover:border-slate-300 transition-colors"

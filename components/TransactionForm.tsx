@@ -119,11 +119,18 @@ export default function TransactionForm({ initial, onSuccess }: Props) {
     return Object.keys(e).length === 0;
   };
 
+  const MIME_TO_EXT: Record<string, string> = {
+    'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif',
+    'image/webp': 'webp', 'image/heic': 'heic', 'image/heif': 'heif',
+    'application/pdf': 'pdf',
+  };
+
   const uploadFile = async (file: File): Promise<string> => {
+    if (!user) throw new Error('You must be signed in to upload files.');
     setUploading(true);
     setUploadProgress(10);
-    const ext = file.name.split('.').pop();
-    const folder = user?.id ?? 'anonymous';
+    const ext = MIME_TO_EXT[file.type] ?? 'bin';
+    const folder = user.id;
     const path = `${folder}/${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`;
     setUploadProgress(40);
     const { error } = await supabase.storage.from(STORAGE_BUCKET).upload(path, file, { upsert: false });
@@ -181,7 +188,15 @@ export default function TransactionForm({ initial, onSuccess }: Props) {
       if (onSuccess) onSuccess();
       else router.push('/transactions');
     } catch (err: unknown) {
-      setServerError(err instanceof Error ? err.message : 'Something went wrong');
+      const msg = err instanceof Error ? err.message : '';
+      // Show user-friendly messages; never leak internal DB/storage details.
+      if (msg.includes('sign in') || msg.includes('authenticated')) {
+        setServerError('You must be signed in to save transactions.');
+      } else if (msg.includes('upload') || msg.includes('storage')) {
+        setServerError('File upload failed. Please check the file and try again.');
+      } else {
+        setServerError('Could not save transaction. Please try again.');
+      }
       setUploading(false);
     } finally {
       setLoading(false);
@@ -199,8 +214,23 @@ export default function TransactionForm({ initial, onSuccess }: Props) {
       errors[key] ? 'border-red-400 bg-red-50' : 'border-slate-200 bg-white hover:border-slate-300'
     }`;
 
+  const SUPABASE_STORAGE_HOST = process.env.NEXT_PUBLIC_SUPABASE_URL
+    ? new URL(process.env.NEXT_PUBLIC_SUPABASE_URL).hostname
+    : '';
+
+  const isSafeAttachmentUrl = (url: string) => {
+    try {
+      const parsed = new URL(url);
+      return parsed.protocol === 'https:' && parsed.hostname === SUPABASE_STORAGE_HOST;
+    } catch {
+      return false;
+    }
+  };
+
   const isImage = (url: string) => /\.(jpe?g|png|gif|webp|heic|heif)$/i.test(url);
-  const existingAttachment = form.attachment_url;
+  const existingAttachment = form.attachment_url && isSafeAttachmentUrl(form.attachment_url)
+    ? form.attachment_url
+    : null;
   const previewFile = selectedFile ? URL.createObjectURL(selectedFile) : null;
   const showPreview = previewFile ?? existingAttachment;
 
