@@ -1,5 +1,8 @@
 import { createServerClient } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
+import { BUDGET_TRACKER_ENABLED } from '@/lib/feature-flags';
+
+const BUDGET_TRACKER_PATHS = ['/', '/transactions', '/add', '/reports', '/budgets', '/profile', '/afford'];
 
 export async function proxy(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request });
@@ -38,8 +41,19 @@ export async function proxy(request: NextRequest) {
 
     if (user && isAuthPage) {
       const url = request.nextUrl.clone();
-      url.pathname = '/';
+      url.pathname = BUDGET_TRACKER_ENABLED ? '/' : '/project-hours';
       return NextResponse.redirect(url);
+    }
+
+    // Redirect Budget Tracker routes to Project Hours when the flag is off
+    if (user && !BUDGET_TRACKER_ENABLED) {
+      const isBudgetPath =
+        BUDGET_TRACKER_PATHS.includes(pathname) || pathname.startsWith('/transactions/');
+      if (isBudgetPath) {
+        const url = request.nextUrl.clone();
+        url.pathname = '/project-hours';
+        return NextResponse.redirect(url);
+      }
     }
 
   } catch (e) {

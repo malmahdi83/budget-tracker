@@ -2,10 +2,11 @@
 
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { LayoutDashboard, List, PlusCircle, BarChart2, Target, Menu, X, LogOut, User, UserCircle, Calculator } from 'lucide-react';
+import { LayoutDashboard, List, PlusCircle, BarChart2, Target, Menu, X, LogOut, User, UserCircle, Calculator, Clock, Briefcase, DollarSign } from 'lucide-react';
 import { useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { useLanguage } from '@/context/LanguageContext';
+import { BUDGET_TRACKER_ENABLED } from '@/lib/feature-flags';
 
 export default function Navbar() {
   const pathname = usePathname();
@@ -17,7 +18,7 @@ export default function Navbar() {
 
   if (pathname === '/login') return null;
 
-  const navItems = [
+  const budgetTrackerItems = [
     { href: '/', label: t('nav.dashboard'), icon: LayoutDashboard },
     { href: '/transactions', label: t('nav.transactions'), icon: List },
     { href: '/add', label: t('nav.add'), icon: PlusCircle },
@@ -26,6 +27,15 @@ export default function Navbar() {
     { href: '/profile', label: t('nav.profile'), icon: UserCircle },
     { href: '/afford', label: t('nav.afford'), icon: Calculator },
   ];
+
+  const projectHoursItems = [
+    { href: '/project-hours/contracts', label: 'Projects & Contracts', icon: Briefcase },
+    { href: '/project-hours/expenses', label: 'Expenses & Rates', icon: DollarSign },
+    { href: '/project-hours/hours', label: 'Developer Hours', icon: Clock },
+    { href: '/project-hours/dashboard', label: 'Monthly Dashboard', icon: BarChart2 },
+  ];
+
+  const navItems = BUDGET_TRACKER_ENABLED ? budgetTrackerItems : projectHoursItems;
 
   const handleSignOut = async () => {
     setSigningOut(true);
@@ -51,10 +61,12 @@ export default function Navbar() {
         <div className="flex items-center justify-between h-16">
 
           {/* Logo */}
-          <div className="flex items-center gap-2">
-            <span className="text-2xl">💰</span>
-            <span className="font-bold text-slate-900 text-lg">Budget Tracker</span>
-          </div>
+          <Link href={BUDGET_TRACKER_ENABLED ? '/' : '/project-hours'} className="flex items-center gap-2">
+            <span className="text-2xl">{BUDGET_TRACKER_ENABLED ? '💰' : '🏢'}</span>
+            <span className="font-bold text-slate-900 text-lg">
+              {BUDGET_TRACKER_ENABLED ? 'Budget Tracker' : 'Soor Technologies'}
+            </span>
+          </Link>
 
           {/* Desktop nav */}
           <div className="hidden md:flex items-center gap-1">
