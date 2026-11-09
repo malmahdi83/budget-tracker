@@ -117,23 +117,6 @@ const translations = {
     'budgets.spent': 'spent',
     'budgets.limit': 'limit',
 
-    // Payment
-    'payment.methodsTitle': 'Choose Payment Method',
-    'payment.methodsSubtitle': 'Budget Tracker Pro — 20 KD (one-time)',
-    'payment.secured': 'Secured by MyFatoorah. You will be redirected to complete your payment.',
-    'payment.fee': 'fee',
-    'payment.successTitle': "You're now Pro!",
-    'payment.successMsg': 'Your payment of 20 KD was confirmed. Your account has been upgraded.',
-    'payment.verifying': 'Verifying your payment…',
-    'payment.verifyingMsg': 'Please wait, this only takes a moment.',
-    'payment.failed': 'Verification Failed',
-    'payment.cancelled': 'Payment Cancelled',
-    'payment.cancelledMsg': 'Your payment was not completed. You have not been charged.',
-    'payment.goToDashboard': 'Go to Dashboard',
-    'payment.back': 'Back to Dashboard',
-    'payment.tryAgain': 'Try Again',
-    'payment.retry': 'Retry',
-
     // Categories
     'cat.Food & Dining': 'Food & Dining',
     'cat.Transportation': 'Transportation',
@@ -327,23 +310,6 @@ const translations = {
     'budgets.used': '% مستخدم',
     'budgets.spent': 'أُنفق',
     'budgets.limit': 'الحد',
-
-    // Payment
-    'payment.methodsTitle': 'اختر طريقة الدفع',
-    'payment.methodsSubtitle': 'تطبيق تتبع الميزانية Pro — 20 دينار (مرة واحدة)',
-    'payment.secured': 'مؤمّن عبر MyFatoorah. ستُحوَّل لإتمام عملية الدفع.',
-    'payment.fee': 'رسوم',
-    'payment.successTitle': 'أصبحت الآن Pro!',
-    'payment.successMsg': 'تم تأكيد دفعتك البالغة 20 دينار. تم ترقية حسابك.',
-    'payment.verifying': 'جاري التحقق من دفعتك…',
-    'payment.verifyingMsg': 'يرجى الانتظار، لن يستغرق هذا سوى لحظة.',
-    'payment.failed': 'فشل التحقق',
-    'payment.cancelled': 'تم إلغاء الدفع',
-    'payment.cancelledMsg': 'لم تكتمل عملية الدفع. لم يتم خصم أي مبلغ.',
-    'payment.goToDashboard': 'الذهاب إلى لوحة التحكم',
-    'payment.back': 'العودة إلى لوحة التحكم',
-    'payment.tryAgain': 'حاول مجدداً',
-    'payment.retry': 'إعادة المحاولة',
 
     // Categories
     'cat.Food & Dining': 'طعام ومطاعم',

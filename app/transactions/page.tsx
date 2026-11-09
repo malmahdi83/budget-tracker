@@ -21,11 +21,19 @@ export default function TransactionsPage() {
   const { user } = useAuth();
   const { t } = useLanguage();
 
+  // Prefix cells starting with formula chars to prevent CSV injection in spreadsheet apps
+  const sanitizeCsvCell = (v: string) => /^[=+\-@\t\r]/.test(v) ? `\t${v}` : v;
+
   const exportCSV = () => {
     const headers = ['Date','Merchant','Category','Payment Method','Description','Notes','Amount'];
     const rows = filtered.map((tx) => [
-      tx.date, tx.merchant, tx.category, tx.payment_method,
-      tx.description ?? '', tx.notes ?? '', tx.amount,
+      tx.date,
+      sanitizeCsvCell(tx.merchant),
+      sanitizeCsvCell(tx.category),
+      tx.payment_method,
+      sanitizeCsvCell(tx.description ?? ''),
+      sanitizeCsvCell(tx.notes ?? ''),
+      tx.amount,
     ]);
     const csv = [headers, ...rows].map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -44,14 +52,15 @@ export default function TransactionsPage() {
   const [sortDir, setSortDir] = useState<SortDir>('desc');
 
   const fetchTransactions = async () => {
+    if (!user) return;
     setLoading(true);
-    const { data, error } = await supabase.from('transactions').select('*');
-    if (error) setError(error.message);
+    const { data, error } = await supabase.from('transactions').select('*').eq('user_id', user.id);
+    if (error) setError('Could not load transactions. Please try again.');
     else setTransactions(data ?? []);
     setLoading(false);
   };
 
-  useEffect(() => { fetchTransactions(); }, []);
+  useEffect(() => { fetchTransactions(); }, [user]);
 
   const filtered = useMemo(() => {
     let r = [...transactions];
@@ -78,7 +87,7 @@ export default function TransactionsPage() {
   const handleDelete = async () => {
     if (!deleteId) return;
     setDeleting(true);
-    await supabase.from('transactions').delete().eq('id', deleteId);
+    await supabase.from('transactions').delete().eq('id', deleteId).eq('user_id', user!.id);
     setTransactions((prev) => prev.filter((tx) => tx.id !== deleteId));
     setDeleteId(null);
     setDeleting(false);

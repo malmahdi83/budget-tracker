@@ -50,8 +50,10 @@ export default function LoginPage() {
         if (newAttempts >= 5) {
           setLockedUntil(Date.now() + 60_000);
           setAttempts(0);
+          if (process.env.NODE_ENV !== 'production') console.warn('[security] Login rate limit triggered, domain:', email.split('@')[1]);
           setError('Too many failed attempts. Please wait 60 seconds before trying again.');
         } else {
+          if (process.env.NODE_ENV !== 'production') console.warn('[security] Failed login attempt', newAttempts);
           setError('Incorrect email or password. Please try again.');
         }
         setLoading(false);
@@ -62,9 +64,29 @@ export default function LoginPage() {
         router.refresh();
       }
     } else {
+      // Check if password appears in known breached password lists (k-anonymity — only first 5 chars of SHA-1 hash sent)
+      try {
+        const msgBuffer = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(password));
+        const hashHex = Array.from(new Uint8Array(msgBuffer)).map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+        const prefix = hashHex.slice(0, 5);
+        const suffix = hashHex.slice(5);
+        const res = await fetch(`https://api.pwnedpasswords.com/range/${prefix}`);
+        if (res.ok) {
+          const text = await res.text();
+          const found = text.split('\n').some(line => line.startsWith(suffix));
+          if (found) {
+            setError('This password has appeared in a data breach. Please choose a different password.');
+            setLoading(false);
+            return;
+          }
+        }
+      } catch {
+        // If the check fails, proceed — don't block registration on a network error
+      }
+
       const { error } = await supabase.auth.signUp({ email, password });
       if (error) {
-        setError(error.message);
+        setError('Could not create account. Please try again.');
         setLoading(false);
       } else {
         setSuccess('Account created! Please check your email to confirm your account, then sign in.');

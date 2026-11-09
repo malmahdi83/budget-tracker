@@ -2,12 +2,13 @@
 
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
-import { supabase, Transaction, CATEGORY_COLORS } from '@/lib/supabase';
+import { supabase, Transaction, CATEGORY_COLORS, getSignedAttachmentUrl } from '@/lib/supabase';
 import StatCard from '@/components/StatCard';
 import CategoryBadge from '@/components/CategoryBadge';
 import { useAuth } from '@/context/AuthContext';
 import { useLanguage } from '@/context/LanguageContext';
-import { DollarSign, TrendingUp, ShoppingBag, Calendar, ArrowRight, AlertTriangle, Paperclip, FileText, Sparkles } from 'lucide-react';
+import { DollarSign, TrendingUp, ShoppingBag, Calendar, ArrowRight, AlertTriangle, Paperclip, FileText } from 'lucide-react';
+
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
 
 export default function Dashboard() {
@@ -18,14 +19,15 @@ export default function Dashboard() {
   const [budgetLimits, setBudgetLimits] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [resolvedAttachmentUrls, setResolvedAttachmentUrls] = useState<Record<string, string>>({});
 
   useEffect(() => {
     const fetchData = async () => {
       const [txRes, limitsRes] = await Promise.all([
-        supabase.from('transactions').select('*').order('date', { ascending: false }),
+        supabase.from('transactions').select('*').eq('user_id', user?.id).order('date', { ascending: false }),
         user ? supabase.from('budget_limits').select('category, monthly_limit').eq('user_id', user.id) : Promise.resolve({ data: [] }),
       ]);
-      if (txRes.error) setError(txRes.error.message);
+      if (txRes.error) setError('Could not load transactions. Please try again.');
       else setTransactions(txRes.data ?? []);
       const lm: Record<string, number> = {};
       (limitsRes.data ?? []).forEach((l: { category: string; monthly_limit: number }) => { lm[l.category] = l.monthly_limit; });
@@ -34,6 +36,21 @@ export default function Dashboard() {
     };
     fetchData();
   }, [user]);
+
+  // Resolve signed URLs for transactions that have attachments
+  useEffect(() => {
+    const withAttachments = transactions.filter((tx) => tx.attachment_url);
+    if (!withAttachments.length) return;
+    Promise.all(
+      withAttachments.map((tx) =>
+        getSignedAttachmentUrl(tx.attachment_url!).then((url) => ({ id: tx.id, url }))
+      )
+    ).then((results) => {
+      const map: Record<string, string> = {};
+      results.forEach((r) => { if (r.url) map[r.id] = r.url; });
+      setResolvedAttachmentUrls(map);
+    });
+  }, [transactions]);
 
   const totalExpenses = transactions.reduce((s, t) => s + Number(t.amount), 0);
   const thisMonth = new Date().toISOString().slice(0, 7);
@@ -65,15 +82,6 @@ export default function Dashboard() {
           <h1 className="text-2xl font-bold text-slate-900">{t('dashboard.title')}</h1>
           <p className="text-slate-500 text-sm mt-1">{t('dashboard.subtitle')}</p>
         </div>
-        {!user?.user_metadata?.is_pro && (
-          <Link
-            href="/payment/methods"
-            className="flex items-center gap-2 px-5 py-2.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-700 hover:to-violet-700 text-white text-sm font-semibold rounded-xl shadow-md hover:shadow-lg transition-all"
-          >
-            <Sparkles size={16} />
-            Upgrade to Pro — 20 KD
-          </Link>
-        )}
       </div>
 
       {/* Stat cards */}
@@ -174,10 +182,10 @@ export default function Dashboard() {
                       {tx.notes && (
                         <p className="text-xs text-slate-400 truncate flex-1">{tx.notes}</p>
                       )}
-                      {tx.attachment_url && (
-                        <a href={tx.attachment_url} target="_blank" rel="noopener noreferrer"
+                      {resolvedAttachmentUrls[tx.id] && (
+                        <a href={resolvedAttachmentUrls[tx.id]} target="_blank" rel="noopener noreferrer"
                           className="flex items-center gap-1 text-xs text-indigo-500 hover:underline flex-shrink-0">
-                          {tx.attachment_url.endsWith('.pdf')
+                          {resolvedAttachmentUrls[tx.id].includes('.pdf')
                             ? <FileText size={11} />
                             : <Paperclip size={11} />}
                           {t('dashboard.attachment')}
@@ -221,8 +229,8 @@ export default function Dashboard() {
                     <td className="py-3">
                       <div className="flex items-center gap-2">
                         <CategoryBadge category={name} />
-                        {overBudget && <AlertTriangle size={13} className="text-red-500" title={t('dashboard.overBudget')} />}
-                        {nearBudget && <AlertTriangle size={13} className="text-amber-500" title={`${budgetPct.toFixed(0)}% ${t('budgets.used')}`} />}
+                        {overBudget && <span title={t('dashboard.overBudget')}><AlertTriangle size={13} className="text-red-500" /></span>}
+                        {nearBudget && <span title={`${budgetPct.toFixed(0)}% ${t('budgets.used')}`}><AlertTriangle size={13} className="text-amber-500" /></span>}
                       </div>
                     </td>
                     <td className="py-3 text-right font-medium text-slate-900">{fmt(value)}</td>
@@ -266,7 +274,7 @@ function LoadingState() {
   );
 }
 
-function ErrorState({ message, t }: { message: string; t: (k: string) => string }) {
+function ErrorState({ message, t }: { message: string; t: (k: Parameters<ReturnType<typeof import('@/lib/translations').getT>>[0], ...args: unknown[]) => string }) {
   return (
     <div className="bg-red-50 border border-red-200 rounded-2xl p-8 text-center">
       <p className="text-red-700 font-medium">{t('general.error')}</p>

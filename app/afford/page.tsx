@@ -22,7 +22,7 @@ type Result = {
 };
 
 export default function AffordPage() {
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
   const { t } = useLanguage();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [spentThisMonth, setSpentThisMonth] = useState(0);
@@ -35,7 +35,7 @@ export default function AffordPage() {
     const thisMonth = new Date().toISOString().slice(0, 7);
     Promise.all([
       supabase.from('user_profiles').select('monthly_salary, monthly_loans, savings').eq('user_id', user.id).single(),
-      supabase.from('transactions').select('amount').gte('date', `${thisMonth}-01`),
+      supabase.from('transactions').select('amount').eq('user_id', user.id).gte('date', `${thisMonth}-01`),
     ]).then(([profileRes, txRes]) => {
       if (profileRes.data) setProfile(profileRes.data);
       const spent = (txRes.data ?? []).reduce((s: number, t: { amount: number }) => s + Number(t.amount), 0);
@@ -67,6 +67,10 @@ export default function AffordPage() {
     }
   };
 
+  // Gate render until auth resolves — prevents stale result state flashing across sessions
+  if (loading) return <div className="space-y-4 animate-pulse max-w-lg"><div className="h-8 w-48 bg-slate-200 rounded-lg" /><div className="h-48 bg-slate-200 rounded-2xl" /></div>;
+  if (!user) return null;
+
   return (
     <div className="max-w-lg space-y-6">
       <div>
@@ -81,6 +85,7 @@ export default function AffordPage() {
           <input
             type="text"
             placeholder={t('afford.itemPlaceholder')}
+            maxLength={100}
             value={itemName}
             onChange={(e) => { setItemName(e.target.value); setResult(null); }}
             className="w-full px-4 py-3 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
@@ -93,6 +98,7 @@ export default function AffordPage() {
             <input
               type="number"
               min="0"
+              max="999999"
               step="0.001"
               placeholder="0.000"
               value={itemPrice}
@@ -131,7 +137,7 @@ export default function AffordPage() {
               <div className="flex items-center gap-3">
                 <CheckCircle size={28} className="text-emerald-500 flex-shrink-0" />
                 <div>
-                  <p className="font-semibold text-slate-800">{t('afford.yes', itemName || t('afford.thisItem'))}</p>
+                  <p className="font-semibold text-slate-800">{t('afford.yes', (itemName || t('afford.thisItem')).replace(/[<>&"']/g, ''))}</p>
                   <p className="text-sm text-slate-500">{t('afford.yesMsg')}</p>
                 </div>
               </div>
@@ -145,7 +151,7 @@ export default function AffordPage() {
               <div className="flex items-center gap-3">
                 <AlertCircle size={28} className="text-amber-500 flex-shrink-0" />
                 <div>
-                  <p className="font-semibold text-slate-800">{t('afford.fromSavings', itemName || t('afford.thisItem'))}</p>
+                  <p className="font-semibold text-slate-800">{t('afford.fromSavings', (itemName || t('afford.thisItem')).replace(/[<>&"']/g, ''))}</p>
                   <p className="text-sm text-slate-500">{t('afford.fromSavingsMsg')}</p>
                 </div>
               </div>
@@ -160,7 +166,7 @@ export default function AffordPage() {
               <div className="flex items-center gap-3">
                 <XCircle size={28} className="text-red-500 flex-shrink-0" />
                 <div>
-                  <p className="font-semibold text-slate-800">{t('afford.no', itemName || t('afford.thisItem'))}</p>
+                  <p className="font-semibold text-slate-800">{t('afford.no', (itemName || t('afford.thisItem')).replace(/[<>&"']/g, ''))}</p>
                   <p className="text-sm text-slate-500">{t('afford.noMsg')}</p>
                 </div>
               </div>

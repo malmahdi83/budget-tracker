@@ -16,17 +16,19 @@ export default function EditTransactionPage() {
   const [error, setError] = useState('');
 
   useEffect(() => {
+    if (!user) return;
     supabase
       .from('transactions')
       .select('*')
       .eq('id', id)
+      .eq('user_id', user.id)
       .single()
       .then(({ data, error }) => {
-        if (error) setError(error.message);
+        if (error) setError('Could not load transaction. Please try again.');
         else setTransaction(data);
         setLoading(false);
       });
-  }, [id]);
+  }, [id, user]);
 
   return (
     <div className="max-w-2xl mx-auto space-y-6">

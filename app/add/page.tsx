@@ -1,8 +1,16 @@
+'use client';
+
 import TransactionForm from '@/components/TransactionForm';
 import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
+import { useAuth } from '@/context/AuthContext';
 
 export default function AddTransactionPage() {
+  const { user, loading } = useAuth();
+
+  if (loading) return <div className="space-y-4 animate-pulse max-w-2xl mx-auto"><div className="h-8 w-48 bg-slate-200 rounded-lg" /><div className="h-96 bg-slate-200 rounded-2xl" /></div>;
+  if (!user) return null; // proxy.ts redirects to /login — this is a second layer of defense
+
   return (
     <div className="max-w-2xl mx-auto space-y-6">
       <div className="flex items-center gap-4">

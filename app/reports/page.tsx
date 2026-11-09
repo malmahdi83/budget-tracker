@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { supabase, Transaction, CATEGORY_COLORS } from '@/lib/supabase';
 import CategoryBadge from '@/components/CategoryBadge';
 import { useLanguage } from '@/context/LanguageContext';
+import { useAuth } from '@/context/AuthContext';
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   LineChart, Line, CartesianGrid, Legend,
@@ -30,16 +31,19 @@ export default function ReportsPage() {
 
 function ReportsContent() {
   const { t } = useLanguage();
+  const { user } = useAuth();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (!user) return;
     supabase
       .from('transactions')
       .select('*')
+      .eq('user_id', user.id)
       .order('date', { ascending: true })
       .then(({ data }) => { setTransactions(data ?? []); setLoading(false); });
-  }, []);
+  }, [user]);
 
   if (loading) {
     return (

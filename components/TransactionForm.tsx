@@ -1,8 +1,8 @@
-'use client';
+﻿'use client';
 
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { supabase, Transaction, TransactionInput, CATEGORIES, PAYMENT_METHODS, STORAGE_BUCKET } from '@/lib/supabase';
+import { supabase, Transaction, TransactionInput, CATEGORIES, PAYMENT_METHODS, STORAGE_BUCKET, getSignedAttachmentUrl } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import { Save, X, Paperclip, Upload, FileText, Image as ImageIcon, Trash2, Sparkles, Loader2, CheckCircle2 } from 'lucide-react';
 
@@ -28,6 +28,7 @@ export default function TransactionForm({ initial, onSuccess }: Props) {
   const { user } = useAuth();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const merchantDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const suggestionCallsRef = useRef(0);
 
   const [form, setForm] = useState<TransactionInput>(
     initial
@@ -54,20 +55,45 @@ export default function TransactionForm({ initial, onSuccess }: Props) {
   const [suggestedCategory, setSuggestedCategory] = useState<string | null>(null);
   const [suggestionAccepted, setSuggestionAccepted] = useState(false);
 
+  // Resolved signed URL for existing attachment display
+  const [resolvedUrl, setResolvedUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (form.attachment_url) {
+      getSignedAttachmentUrl(form.attachment_url).then(setResolvedUrl);
+    } else {
+      setResolvedUrl(null);
+    }
+  }, [form.attachment_url]);
+
   // File upload state
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
 
+  // Strip control chars, Unicode direction overrides, invisible chars, and cap length
+  const sanitizeForLLM = (s: string, max: number) =>
+    s
+      .replace(/[\x00-\x1F\x7F]/g, ' ')
+      .replace(/[​-‏‪-‮⁠-⁩﻿]/g, '')
+      .replace(/[-]/g, '')
+      .normalize('NFC')
+      .slice(0, max);
+
   const fetchSuggestion = useCallback(async (merchant: string, description: string) => {
     if (!merchant.trim()) return;
+    if (suggestionCallsRef.current >= 20) return; // cap LLM calls per page load (LLM10)
+    suggestionCallsRef.current += 1;
     setSuggesting(true);
     setSuggestedCategory(null);
     setSuggestionAccepted(false);
     try {
       const res = await supabase.functions.invoke('suggest-category', {
-        body: { merchant: merchant.trim(), description: description.trim() },
+        body: {
+          // XML delimiters tell the Edge Function to treat these as data, not instructions
+          merchant: '<merchant>' + sanitizeForLLM(merchant.trim(), 100) + '</merchant>',
+          description: '<description>' + sanitizeForLLM(description.trim(), 200) + '</description>',
+        },
       });
       if (res.error) throw res.error;
       const category: string = res.data?.category;
@@ -110,7 +136,8 @@ export default function TransactionForm({ initial, onSuccess }: Props) {
 
   const validate = () => {
     const e: typeof errors = {};
-    if (!form.amount || form.amount <= 0) e.amount = 'Amount must be greater than 0';
+    if (!form.amount || !isFinite(form.amount) || form.amount <= 0) e.amount = 'Amount must be greater than 0';
+    if (form.amount > 10_000_000) e.amount = 'Amount exceeds maximum allowed value';
     if (!form.category) e.category = 'Category is required';
     if (!form.date) e.date = 'Date is required';
     if (!form.payment_method) e.payment_method = 'Payment method is required';
@@ -135,14 +162,24 @@ export default function TransactionForm({ initial, onSuccess }: Props) {
     setUploadProgress(40);
     const { error } = await supabase.storage.from(STORAGE_BUCKET).upload(path, file, { upsert: false });
     if (error) throw error;
-    setUploadProgress(80);
-    const { data } = supabase.storage.from(STORAGE_BUCKET).getPublicUrl(path);
     setUploadProgress(100);
     setUploading(false);
-    return data.publicUrl;
+    // Store the storage path (not a public URL) — display via signed URL generated in useEffect
+    return path;
   };
 
-  const handleFileChange = (file: File | null) => {
+  const checkMagicBytes = async (file: File): Promise<boolean> => {
+    const buf = await file.slice(0, 12).arrayBuffer();
+    const b = new Uint8Array(buf);
+    if (b[0] === 0xFF && b[1] === 0xD8 && b[2] === 0xFF) return true; // JPEG
+    if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47) return true; // PNG
+    if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return true; // GIF
+    if (b[0] === 0x25 && b[1] === 0x50 && b[2] === 0x44 && b[3] === 0x46) return true; // PDF
+    if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return true; // WebP
+    return false;
+  };
+
+  const handleFileChange = async (file: File | null) => {
     if (!file) return;
     const allowed = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/heic', 'image/heif', 'application/pdf'];
     if (!allowed.includes(file.type)) {
@@ -151,6 +188,12 @@ export default function TransactionForm({ initial, onSuccess }: Props) {
     }
     if (file.size > 10 * 1024 * 1024) {
       setServerError('File size must be under 10 MB.');
+      return;
+    }
+    // Validate actual file content via magic bytes (MIME type from browser is spoofable)
+    const validBytes = await checkMagicBytes(file);
+    if (!validBytes && file.type !== 'image/heic' && file.type !== 'image/heif') {
+      setServerError('File content does not match the expected type. Please upload a valid image or PDF.');
       return;
     }
     setServerError('');
@@ -179,7 +222,7 @@ export default function TransactionForm({ initial, onSuccess }: Props) {
         user_id: initial ? form.user_id : (user?.id ?? null),
       };
       if (initial) {
-        const { error } = await supabase.from('transactions').update(payload).eq('id', initial.id);
+        const { error } = await supabase.from('transactions').update(payload).eq('id', initial.id).eq('user_id', user?.id);
         if (error) throw error;
       } else {
         const { error } = await supabase.from('transactions').insert(payload);
@@ -214,23 +257,9 @@ export default function TransactionForm({ initial, onSuccess }: Props) {
       errors[key] ? 'border-red-400 bg-red-50' : 'border-slate-200 bg-white hover:border-slate-300'
     }`;
 
-  const SUPABASE_STORAGE_HOST = process.env.NEXT_PUBLIC_SUPABASE_URL
-    ? new URL(process.env.NEXT_PUBLIC_SUPABASE_URL).hostname
-    : '';
-
-  const isSafeAttachmentUrl = (url: string) => {
-    try {
-      const parsed = new URL(url);
-      return parsed.protocol === 'https:' && parsed.hostname === SUPABASE_STORAGE_HOST;
-    } catch {
-      return false;
-    }
-  };
-
   const isImage = (url: string) => /\.(jpe?g|png|gif|webp|heic|heif)$/i.test(url);
-  const existingAttachment = form.attachment_url && isSafeAttachmentUrl(form.attachment_url)
-    ? form.attachment_url
-    : null;
+  // resolvedUrl is either a validated signed URL or a host-validated legacy public URL (set via useEffect above)
+  const existingAttachment = resolvedUrl;
   const previewFile = selectedFile ? URL.createObjectURL(selectedFile) : null;
   const showPreview = previewFile ?? existingAttachment;
 
@@ -250,7 +279,7 @@ export default function TransactionForm({ initial, onSuccess }: Props) {
           </label>
           <div className="relative">
             <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 text-sm">$</span>
-            <input type="number" step="0.01" min="0" className={`${inputCls('amount')} pl-7`} {...field('amount')} />
+            <input type="number" step="0.01" min="0" max="10000000" className={`${inputCls('amount')} pl-7`} {...field('amount')} />
           </div>
           {errors.amount && <p className="text-red-500 text-xs mt-1">{errors.amount}</p>}
         </div>
@@ -274,6 +303,7 @@ export default function TransactionForm({ initial, onSuccess }: Props) {
           <input
             type="text"
             placeholder="e.g. Starbucks"
+            maxLength={100}
             className={inputCls('merchant')}
             value={form.merchant}
             onChange={handleMerchantChange}
@@ -293,6 +323,7 @@ export default function TransactionForm({ initial, onSuccess }: Props) {
         <input
           type="text"
           placeholder="Brief description..."
+          maxLength={255}
           className={inputCls('description')}
           value={String(form.description ?? '')}
           onChange={handleDescriptionChange}
@@ -315,6 +346,7 @@ export default function TransactionForm({ initial, onSuccess }: Props) {
           <div className="mb-2 flex items-center justify-between gap-3 px-3 py-2 bg-indigo-50 border border-indigo-200 rounded-lg">
             <div className="flex items-center gap-2 text-sm text-indigo-700">
               <Sparkles size={14} className="text-indigo-500 flex-shrink-0" />
+              {/* suggestedCategory is allowlist-validated via CATEGORIES.includes() before being set — safe to render */}
               <span>AI suggests: <strong className="font-semibold">{suggestedCategory}</strong></span>
             </div>
             <div className="flex items-center gap-2 flex-shrink-0">
@@ -377,6 +409,7 @@ export default function TransactionForm({ initial, onSuccess }: Props) {
         <textarea
           rows={3}
           placeholder="Additional notes..."
+          maxLength={500}
           className={`${inputCls('notes')} resize-none`}
           value={String(form.notes ?? '')}
           onChange={(e) => setForm((f) => ({ ...f, notes: e.target.value }))}

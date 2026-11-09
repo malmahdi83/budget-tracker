@@ -46,6 +46,25 @@ export const PAYMENT_METHODS = [
   'Other',
 ];
 
+// Returns a short-lived signed URL for an attachment path, or validates legacy public URLs.
+// New uploads store the storage path; old records may store a full public URL.
+export async function getSignedAttachmentUrl(pathOrUrl: string): Promise<string | null> {
+  if (!pathOrUrl) return null;
+  if (pathOrUrl.startsWith('https://')) {
+    // Backward compat: old records store full public URLs — validate they're from our bucket
+    try {
+      const host = new URL(process.env.NEXT_PUBLIC_SUPABASE_URL!).hostname;
+      const { hostname, protocol } = new URL(pathOrUrl);
+      if (protocol !== 'https:' || hostname !== host) return null;
+    } catch { return null; }
+    return pathOrUrl;
+  }
+  // New records store the storage path — generate a 1-hour signed URL
+  const { data, error } = await supabase.storage.from(STORAGE_BUCKET).createSignedUrl(pathOrUrl, 3600);
+  if (error || !data) return null;
+  return data.signedUrl;
+}
+
 export const CATEGORY_COLORS: Record<string, string> = {
   'Food & Dining': '#f97316',
   Transportation: '#3b82f6',

@@ -23,6 +23,7 @@ export default function ProfilePage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState('');
 
   useEffect(() => {
     if (!user) return;
@@ -40,7 +41,8 @@ export default function ProfilePage() {
   const handleSave = async () => {
     if (!user) return;
     setSaving(true);
-    await supabase.from('user_profiles').upsert({
+    setSaveError('');
+    const { error } = await supabase.from('user_profiles').upsert({
       user_id: user.id,
       monthly_salary: profile.monthly_salary,
       monthly_loans: profile.monthly_loans,
@@ -48,8 +50,12 @@ export default function ProfilePage() {
       updated_at: new Date().toISOString(),
     }, { onConflict: 'user_id' });
     setSaving(false);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    if (error) {
+      setSaveError('Could not save profile. Please try again.');
+    } else {
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2000);
+    }
   };
 
   const disposable = profile.monthly_salary - profile.monthly_loans;
@@ -85,7 +91,9 @@ export default function ProfilePage() {
             <input
               type="number"
               min="0"
+              max="10000000"
               step="0.001"
+              autoComplete="off"
               value={profile.monthly_salary || ''}
               onChange={(e) => setProfile((p) => ({ ...p, monthly_salary: parseFloat(e.target.value) || 0 }))}
               placeholder="0.000"
@@ -107,7 +115,9 @@ export default function ProfilePage() {
             <input
               type="number"
               min="0"
+              max="10000000"
               step="0.001"
+              autoComplete="off"
               value={profile.monthly_loans || ''}
               onChange={(e) => setProfile((p) => ({ ...p, monthly_loans: parseFloat(e.target.value) || 0 }))}
               placeholder="0.000"
@@ -130,7 +140,9 @@ export default function ProfilePage() {
             <input
               type="number"
               min="0"
+              max="10000000"
               step="0.001"
+              autoComplete="off"
               value={profile.savings || ''}
               onChange={(e) => setProfile((p) => ({ ...p, savings: parseFloat(e.target.value) || 0 }))}
               placeholder="0.000"
@@ -146,6 +158,12 @@ export default function ProfilePage() {
             <span className={`font-semibold text-sm ${disposable >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
               {fmt(disposable)}
             </span>
+          </div>
+        )}
+
+        {saveError && (
+          <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3">
+            {saveError}
           </div>
         )}
 

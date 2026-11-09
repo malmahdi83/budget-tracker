@@ -41,8 +41,15 @@ export async function proxy(request: NextRequest) {
       url.pathname = '/';
       return NextResponse.redirect(url);
     }
-  } catch {
+
+  } catch (e) {
     // Auth check failed — deny by default (fail-closed).
+    console.error(JSON.stringify({
+      event: 'proxy_auth_error',
+      path: request.nextUrl.pathname,
+      ts: new Date().toISOString(),
+      error: e instanceof Error ? e.message : 'unknown',
+    }));
     if (!isAuthPage) {
       const url = request.nextUrl.clone();
       url.pathname = '/login';

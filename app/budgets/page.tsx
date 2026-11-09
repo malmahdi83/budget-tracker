@@ -40,7 +40,7 @@ function BudgetsContent() {
     if (!user) return;
     Promise.all([
       supabase.from('budget_limits').select('*').eq('user_id', user.id),
-      supabase.from('transactions').select('category, amount').gte('date', `${thisMonth}-01`),
+      supabase.from('transactions').select('category, amount').eq('user_id', user.id).gte('date', `${thisMonth}-01`),
     ]).then(([limitsRes, txRes]) => {
       setLimits(limitsRes.data ?? []);
       const sp: Record<string, number> = {};
@@ -62,7 +62,7 @@ function BudgetsContent() {
     setSaving(category);
     const existing = getLimit(category);
     if (existing) {
-      await supabase.from('budget_limits').update({ monthly_limit: val }).eq('id', existing.id);
+      await supabase.from('budget_limits').update({ monthly_limit: val }).eq('id', existing.id).eq('user_id', user!.id);
       setLimits((prev) => prev.map((l) => l.category === category ? { ...l, monthly_limit: val } : l));
     } else {
       const { data } = await supabase.from('budget_limits').insert({ user_id: user.id, category, monthly_limit: val }).select().single();
@@ -75,7 +75,7 @@ function BudgetsContent() {
   const handleDelete = async (category: string) => {
     const existing = getLimit(category);
     if (!existing) return;
-    await supabase.from('budget_limits').delete().eq('id', existing.id);
+    await supabase.from('budget_limits').delete().eq('id', existing.id).eq('user_id', user!.id);
     setLimits((prev) => prev.filter((l) => l.category !== category));
     setDrafts((d) => { const n = { ...d }; delete n[category]; return n; });
   };
@@ -144,6 +144,7 @@ function BudgetsContent() {
                   <input
                     type="number"
                     min="1"
+                    max="10000000"
                     step="1"
                     placeholder={t('budgets.setLimit')}
                     value={draft}

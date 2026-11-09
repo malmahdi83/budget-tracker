@@ -22,7 +22,7 @@ export default function Navbar() {
     { href: '/transactions', label: t('nav.transactions'), icon: List },
     { href: '/add', label: t('nav.add'), icon: PlusCircle },
     { href: '/reports', label: t('nav.reports'), icon: BarChart2 },
-    { href: '/pro/budgets', label: t('nav.budgets'), icon: Target },
+    { href: '/budgets', label: t('nav.budgets'), icon: Target },
     { href: '/profile', label: t('nav.profile'), icon: UserCircle },
     { href: '/afford', label: t('nav.afford'), icon: Calculator },
   ];
