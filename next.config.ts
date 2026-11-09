@@ -15,7 +15,7 @@ const nextConfig: NextConfig = {
               "default-src 'self'",
               `connect-src 'self' ${SUPABASE_URL} https://*.supabase.co wss://*.supabase.co https://api.pwnedpasswords.com`,
               `img-src 'self' data: blob: ${SUPABASE_URL} https://*.supabase.co`,
-              "script-src 'self'",
+              "script-src 'self' 'unsafe-inline'", // unsafe-inline required by Next.js inline bootstrap scripts
               "style-src 'self' 'unsafe-inline'", // unsafe-inline required by Tailwind/Recharts inline styles; remove when migrating to CSS-in-JS or nonce
               "font-src 'self'",
               "frame-ancestors 'none'",
