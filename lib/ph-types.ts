@@ -1,3 +1,55 @@
+// ── Expense & rates types ──────────────────────────────────────────────────
+
+export interface PhExpenseType {
+  id: string;
+  user_id: string;
+  name: string;
+  created_at: string;
+}
+
+export interface PhExpensePeriod {
+  id: string;
+  expense_type_id: string;
+  user_id: string;
+  amount: number;
+  start_month: string; // YYYY-MM
+  end_month: string | null; // null = still active
+  created_at: string;
+}
+
+export interface PhDeveloperRate {
+  id: string;
+  user_id: string;
+  hourly_rate: number;
+  effective_date: string;
+  created_at: string;
+}
+
+export interface PhHoursEntry {
+  id: string;
+  user_id: string;
+  work_date: string;
+  hours: number;
+  description: string;
+  project_id: string | null;
+  applied_rate: number;
+  cost: number;
+  created_at: string;
+  ph_projects?: { name: string };
+}
+
+/** Returns the month before ym (YYYY-MM). */
+export function prevMonth(ym: string): string {
+  const [y, m] = ym.split('-').map(Number);
+  return m === 1 ? `${y - 1}-12` : `${y}-${String(m - 1).padStart(2, '0')}`;
+}
+
+export function currentYM(): string {
+  return new Date().toISOString().slice(0, 7);
+}
+
+// ── Contract types ─────────────────────────────────────────────────────────
+
 export type ContractType = 'maintenance' | 'implementation';
 export type ContractStatus = 'active' | 'completed' | 'cancelled';
 
