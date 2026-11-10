@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, Fragment } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/context/AuthContext';
 import {
@@ -30,30 +30,41 @@ function monthsSpanned(start: string, end: string): number {
   return Math.max(1, (ey - sy) * 12 + (em - sm) + 1);
 }
 
-function dateToYM(d: string) { return d.slice(0, 7); }
-
 function isInMonth(date: string, ym: string) { return date.startsWith(ym); }
 
 function rangeCoversMonth(start: string, end: string, ym: string): boolean {
-  const fd = firstDay(ym);
-  const ld = lastDay(ym);
-  return start <= ld && end >= fd;
+  return start <= lastDay(ym) && end >= firstDay(ym);
 }
 
-// ── Types for computed rows ────────────────────────────────────────────────
+// ── Types ──────────────────────────────────────────────────────────────────
 
-interface ProjectRow {
-  projectId: string;
-  projectName: string;
+type RichInstallment = PhInstallment & { ph_payments: PhPayment[] };
+type RichContract = PhContract & {
+  ph_projects: { id: string; name: string } | null;
+  ph_clients: { name: string } | null;
+  ph_installments: RichInstallment[];
+};
+
+interface ContractContribution {
   contractId: string;
   contractType: 'maintenance' | 'implementation';
   totalValue: number;
   contractStart: string;
   contractEnd: string;
-  installments: (PhInstallment & { ph_payments: PhPayment[] })[];
+  installments: RichInstallment[];
   scheduleValid: boolean;
-  scheduleDiff: number;
+  scheduleDiff: number;         // signed: installment sum - contract value
   planningIncome: number;
+  installmentsDue: number;
+  paymentsCollected: number;
+}
+
+interface ProjectRow {
+  projectId: string;
+  projectName: string;
+  contracts: ContractContribution[];
+  anyScheduleInvalid: boolean;
+  planningIncome: number;       // sum from all valid contracts
   fixedExpenseShare: number;
   laborBudget: number;
   hoursLogged: number;
@@ -66,10 +77,12 @@ interface ProjectRow {
   rateAvailable: boolean;
 }
 
+// ── Page ──────────────────────────────────────────────────────────────────
+
 export default function MonthlyDashboardPage() {
   const { user, loading: authLoading } = useAuth();
   const [selectedMonth, setSelectedMonth] = useState<string>(currentYM());
-  const [contracts, setContracts] = useState<(PhContract & { ph_installments: (PhInstallment & { ph_payments: PhPayment[] })[] })[]>([]);
+  const [contracts, setContracts] = useState<RichContract[]>([]);
   const [hours, setHours] = useState<PhHoursEntry[]>([]);
   const [expensePeriods, setExpensePeriods] = useState<(PhExpensePeriod & { ph_expense_types: { name: string } })[]>([]);
   const [planningRate, setPlanningRate] = useState<number | null>(null);
@@ -79,9 +92,8 @@ export default function MonthlyDashboardPage() {
   const fetchData = async (ym: string) => {
     if (!user) return;
     setLoading(true);
-
-    const fd = firstDay(ym);
     const ld = lastDay(ym);
+    const fd = firstDay(ym);
 
     const [contractsRes, hoursRes, expenseRes, rateRes] = await Promise.all([
       supabase
@@ -113,7 +125,7 @@ export default function MonthlyDashboardPage() {
         .maybeSingle(),
     ]);
 
-    setContracts((contractsRes.data ?? []) as typeof contracts);
+    setContracts((contractsRes.data ?? []) as RichContract[]);
     setHours((hoursRes.data ?? []) as PhHoursEntry[]);
     setExpensePeriods((expenseRes.data ?? []) as typeof expensePeriods);
     setPlanningRate((rateRes.data as PhDeveloperRate | null)?.hourly_rate ?? null);
@@ -126,67 +138,97 @@ export default function MonthlyDashboardPage() {
 
   // ── Computed data ──────────────────────────────────────────────────────
 
-  const totalFixedExpenses = useMemo(() =>
-    expensePeriods.reduce((s, ep) => s + Number(ep.amount), 0),
+  const totalFixedExpenses = useMemo(
+    () => expensePeriods.reduce((s, ep) => s + Number(ep.amount), 0),
     [expensePeriods]
   );
 
   const projectRows = useMemo((): ProjectRow[] => {
     if (contracts.length === 0) return [];
 
-    const activeProjectCount = contracts.length;
-    const fixedShare = activeProjectCount > 0 ? totalFixedExpenses / activeProjectCount : 0;
+    // Build per-contract contributions, then group by project_id
+    const contractsByProject = new Map<string, ContractContribution[]>();
+    const projectNames = new Map<string, string>();
 
-    const fd = firstDay(selectedMonth);
-    const ld = lastDay(selectedMonth);
+    for (const c of contracts) {
+      const projectId = c.ph_projects?.id ?? c.project_id;
+      const projectName = c.ph_projects?.name ?? '—';
+      projectNames.set(projectId, projectName);
 
-    return contracts.map((c) => {
-      const projectId = (c.ph_projects as { id: string; name: string } | undefined)?.id ?? c.project_id;
-      const projectName = (c.ph_projects as { name: string } | undefined)?.name ?? '—';
-
-      const installments = (c.ph_installments ?? []) as (PhInstallment & { ph_payments: PhPayment[] })[];
-
-      // Schedule validity check
+      const installments = (c.ph_installments ?? []) as RichInstallment[];
       const installmentSum = installments.reduce((s, i) => s + Number(i.amount), 0);
       const totalValue = Number(c.total_value);
-      const scheduleDiff = Math.abs(Math.round((installmentSum - totalValue) * 1000) / 1000);
-      const scheduleValid = scheduleDiff < 0.001;
+      const rawDiff = Math.round((installmentSum - totalValue) * 1000) / 1000;
+      const scheduleValid = Math.abs(rawDiff) < 0.001;
 
-      // Planning income
       let planningIncome = 0;
       if (scheduleValid) {
         if (c.contract_type === 'maintenance') {
           for (const inst of installments) {
             if (!inst.period_start || !inst.period_end) continue;
             if (!rangeCoversMonth(inst.period_start, inst.period_end, selectedMonth)) continue;
-            const ms = monthsSpanned(inst.period_start, inst.period_end);
-            planningIncome += Number(inst.amount) / ms;
+            planningIncome += Number(inst.amount) / monthsSpanned(inst.period_start, inst.period_end);
           }
         } else {
-          // implementation: spread total value over contract duration
           if (rangeCoversMonth(c.start_date, c.end_date, selectedMonth)) {
-            const ms = monthsSpanned(c.start_date, c.end_date);
-            planningIncome = totalValue / ms;
+            planningIncome = totalValue / monthsSpanned(c.start_date, c.end_date);
           }
         }
       }
 
-      // Fixed expense share
+      const installmentsDue = installments
+        .filter((i) => isInMonth(i.due_date, selectedMonth))
+        .reduce((s, i) => s + Number(i.amount), 0);
+
+      const paymentsCollected = installments
+        .flatMap((i) => i.ph_payments ?? [])
+        .filter((p) => isInMonth(p.collection_date, selectedMonth))
+        .reduce((s, p) => s + Number(p.amount), 0);
+
+      const contrib: ContractContribution = {
+        contractId: c.id,
+        contractType: c.contract_type,
+        totalValue,
+        contractStart: c.start_date,
+        contractEnd: c.end_date,
+        installments,
+        scheduleValid,
+        scheduleDiff: rawDiff,
+        planningIncome,
+        installmentsDue,
+        paymentsCollected,
+      };
+
+      if (!contractsByProject.has(projectId)) contractsByProject.set(projectId, []);
+      contractsByProject.get(projectId)!.push(contrib);
+    }
+
+    // Count distinct active projects for fixed-expense split
+    const distinctProjectCount = contractsByProject.size;
+    const fixedShare = distinctProjectCount > 0 ? totalFixedExpenses / distinctProjectCount : 0;
+    const rateAvailable = planningRate !== null && planningRate > 0;
+
+    const rows: ProjectRow[] = [];
+
+    for (const [projectId, contribs] of contractsByProject) {
+      const anyScheduleInvalid = contribs.some((c) => !c.scheduleValid);
+      const planningIncome = contribs.reduce((s, c) => s + c.planningIncome, 0);
+      const installmentsDue = contribs.reduce((s, c) => s + c.installmentsDue, 0);
+      const paymentsCollected = contribs.reduce((s, c) => s + c.paymentsCollected, 0);
+
       const fixedExpenseShare = fixedShare;
       const laborBudget = planningIncome - fixedExpenseShare;
 
-      // Hours logged for this project
-      const projectHours = hours.filter((h) => h.project_id === projectId);
-      const hoursLogged = projectHours.reduce((s, h) => s + Number(h.hours), 0);
-      const actualCost = projectHours.reduce((s, h) => s + Number(h.cost), 0);
+      // Hours: count this project's entries once regardless of how many contracts it has
+      const projectHoursEntries = hours.filter((h) => h.project_id === projectId);
+      const hoursLogged = projectHoursEntries.reduce((s, h) => s + Number(h.hours), 0);
+      const actualCost = projectHoursEntries.reduce((s, h) => s + Number(h.cost), 0);
 
-      // Hours cap and remaining
-      const rateAvailable = planningRate !== null && planningRate > 0;
       let hoursCap: number | null = null;
       let hoursRemaining: number | null = null;
       let overrunKWD = 0;
 
-      if (scheduleValid && rateAvailable && planningRate) {
+      if (!anyScheduleInvalid && rateAvailable && planningRate) {
         hoursCap = Math.max(0, laborBudget / planningRate);
         const remaining = laborBudget - actualCost;
         if (remaining >= 0) {
@@ -197,27 +239,11 @@ export default function MonthlyDashboardPage() {
         }
       }
 
-      // Installments due and payments collected in selected month
-      const installmentsDue = installments
-        .filter((i) => isInMonth(i.due_date, selectedMonth))
-        .reduce((s, i) => s + Number(i.amount), 0);
-
-      const paymentsCollected = installments
-        .flatMap((i) => i.ph_payments ?? [])
-        .filter((p) => isInMonth(p.collection_date, selectedMonth))
-        .reduce((s, p) => s + Number(p.amount), 0);
-
-      return {
+      rows.push({
         projectId,
-        projectName,
-        contractId: c.id,
-        contractType: c.contract_type,
-        totalValue,
-        contractStart: c.start_date,
-        contractEnd: c.end_date,
-        installments,
-        scheduleValid,
-        scheduleDiff: Math.round((installmentSum - totalValue) * 1000) / 1000,
+        projectName: projectNames.get(projectId) ?? '—',
+        contracts: contribs,
+        anyScheduleInvalid,
         planningIncome,
         fixedExpenseShare,
         laborBudget,
@@ -229,18 +255,17 @@ export default function MonthlyDashboardPage() {
         installmentsDue,
         paymentsCollected,
         rateAvailable,
-      };
-    });
+      });
+    }
+
+    return rows;
   }, [contracts, hours, expensePeriods, planningRate, selectedMonth, totalFixedExpenses]);
 
-  const othersHours = useMemo(() =>
-    hours.filter((h) => h.project_id === null),
-    [hours]
-  );
+  const othersHours = useMemo(() => hours.filter((h) => h.project_id === null), [hours]);
   const othersTotalHours = othersHours.reduce((s, h) => s + Number(h.hours), 0);
   const othersTotalCost = othersHours.reduce((s, h) => s + Number(h.cost), 0);
 
-  const anyInvalidSchedule = projectRows.some((r) => !r.scheduleValid);
+  const anyInvalidSchedule = projectRows.some((r) => r.anyScheduleInvalid);
   const totalPlanningIncome = projectRows.reduce((s, r) => s + r.planningIncome, 0);
   const totalProjectDevCost = projectRows.reduce((s, r) => s + r.actualCost, 0);
   const companyResult = totalPlanningIncome - totalFixedExpenses - totalProjectDevCost - othersTotalCost;
@@ -254,7 +279,7 @@ export default function MonthlyDashboardPage() {
     });
   };
 
-  const noActiveProjects = contracts.length === 0;
+  const noActiveProjects = projectRows.length === 0;
 
   if (authLoading || loading) {
     return (
@@ -297,14 +322,16 @@ export default function MonthlyDashboardPage() {
         <div className="flex items-start gap-3 p-4 bg-red-50 border border-red-200 rounded-xl text-sm text-red-800">
           <AlertTriangle size={16} className="mt-0.5 shrink-0" />
           <span>
-            One or more contracts have installment totals that do not match their contract value. The company planning summary is <strong>incomplete</strong>.
-            Hours Cap and Hours Remaining are unavailable for affected projects until the schedule is corrected in <strong>Projects &amp; Contracts</strong>.
+            One or more contracts have installment totals that do not match their contract value.
+            The company planning summary is <strong>incomplete</strong>.
+            Hours Cap and Hours Remaining are unavailable for affected projects.
+            Expand a project row to see which contract needs correction.
           </span>
         </div>
       )}
 
       {/* Main project table */}
-      {projectRows.length === 0 ? (
+      {noActiveProjects ? (
         <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-16 flex flex-col items-center gap-4">
           <div className="w-16 h-16 rounded-full bg-indigo-50 flex items-center justify-center">
             <BarChart2 size={32} className="text-indigo-400" />
@@ -326,36 +353,43 @@ export default function MonthlyDashboardPage() {
               </thead>
               <tbody>
                 {projectRows.map((row) => (
-                  <>
+                  <Fragment key={row.projectId}>
                     <tr
-                      key={row.contractId}
                       className="border-b border-slate-50 hover:bg-slate-50 transition-colors cursor-pointer"
-                      onClick={() => toggleExpand(row.contractId)}
+                      onClick={() => toggleExpand(row.projectId)}
                     >
                       <td className="px-4 py-3 text-slate-400">
-                        {expanded.has(row.contractId)
+                        {expanded.has(row.projectId)
                           ? <ChevronDown size={14} />
-                          : <ChevronRight size={14} />
-                        }
+                          : <ChevronRight size={14} />}
                       </td>
                       <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap">
                           <span className="font-medium text-slate-900">{row.projectName}</span>
-                          {!row.scheduleValid && (
+                          {row.anyScheduleInvalid && (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-600">
                               <AlertTriangle size={10} />
                               Schedule mismatch
                             </span>
                           )}
-                          <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${
-                            row.contractType === 'maintenance' ? 'bg-blue-50 text-blue-700' : 'bg-purple-50 text-purple-700'
-                          }`}>
-                            {row.contractType === 'maintenance' ? 'Maintenance' : 'Implementation'}
-                          </span>
+                          {row.contracts.length > 1 && (
+                            <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-600">
+                              {row.contracts.length} contracts
+                            </span>
+                          )}
+                          {row.contracts.length === 1 && (
+                            <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${
+                              row.contracts[0].contractType === 'maintenance'
+                                ? 'bg-blue-50 text-blue-700'
+                                : 'bg-purple-50 text-purple-700'
+                            }`}>
+                              {row.contracts[0].contractType === 'maintenance' ? 'Maintenance' : 'Implementation'}
+                            </span>
+                          )}
                         </div>
                       </td>
                       <td className="px-4 py-3 text-right font-medium text-slate-900">
-                        {!row.scheduleValid ? (
+                        {row.anyScheduleInvalid ? (
                           <span className="text-slate-400 text-xs">Unavailable</span>
                         ) : !row.rateAvailable ? (
                           <span className="text-amber-500 text-xs">No rate set</span>
@@ -367,14 +401,20 @@ export default function MonthlyDashboardPage() {
                         {row.hoursLogged.toFixed(1)} h
                       </td>
                       <td className="px-4 py-3 text-right">
-                        {!row.scheduleValid ? (
+                        {row.anyScheduleInvalid ? (
                           <span className="text-slate-400 text-xs">Unavailable</span>
                         ) : !row.rateAvailable ? (
                           <span className="text-amber-500 text-xs">No rate set</span>
                         ) : row.overrunKWD > 0 ? (
-                          <span className="text-red-600 font-medium">0 h <span className="text-xs font-normal">(overrun {KWD(row.overrunKWD)})</span></span>
+                          <span className="text-red-600 font-medium">
+                            0 h <span className="text-xs font-normal">(overrun {KWD(row.overrunKWD)})</span>
+                          </span>
                         ) : (
-                          <span className={row.hoursRemaining! < (row.hoursCap ?? 0) * 0.2 ? 'text-amber-600 font-medium' : 'text-emerald-600 font-medium'}>
+                          <span className={
+                            row.hoursRemaining! < (row.hoursCap ?? 0) * 0.2
+                              ? 'text-amber-600 font-medium'
+                              : 'text-emerald-600 font-medium'
+                          }>
                             {row.hoursRemaining!.toFixed(1)} h
                           </span>
                         )}
@@ -382,80 +422,130 @@ export default function MonthlyDashboardPage() {
                     </tr>
 
                     {/* Financial breakdown */}
-                    {expanded.has(row.contractId) && (
-                      <tr key={`${row.contractId}-detail`} className="border-b border-slate-100 bg-slate-50/50">
+                    {expanded.has(row.projectId) && (
+                      <tr className="border-b border-slate-100 bg-slate-50/50">
                         <td></td>
                         <td colSpan={4} className="px-4 py-4">
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          <div className="space-y-4">
 
-                            {/* Schedule mismatch alert */}
-                            {!row.scheduleValid && (
-                              <div className="md:col-span-2 flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700">
-                                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
-                                <span>
-                                  Installment total ({KWD(row.installments.reduce((s, i) => s + Number(i.amount), 0))}) differs from contract value ({KWD(row.totalValue)}) by{' '}
-                                  <strong>{KWD(Math.abs(row.scheduleDiff))}</strong>.
-                                  Correct the schedule in Projects &amp; Contracts to restore hours calculations.
-                                </span>
-                              </div>
-                            )}
+                            {/* Per-contract contributions */}
+                            {row.contracts.map((c) => (
+                              <div key={c.contractId} className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                {/* Contract header */}
+                                <div className="md:col-span-2 flex items-center gap-2">
+                                  <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${
+                                    c.contractType === 'maintenance' ? 'bg-blue-50 text-blue-700' : 'bg-purple-50 text-purple-700'
+                                  }`}>
+                                    {c.contractType === 'maintenance' ? 'Maintenance' : 'Implementation'}
+                                  </span>
+                                  <span className="text-xs text-slate-400">{c.contractStart} → {c.contractEnd} · {KWD(c.totalValue)}</span>
+                                  {!c.scheduleValid && (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-600">
+                                      <AlertTriangle size={10} />
+                                      Mismatch: {KWD(Math.abs(c.scheduleDiff))} difference
+                                    </span>
+                                  )}
+                                </div>
 
-                            {/* Financial summary */}
-                            <div className="bg-white rounded-xl border border-slate-100 p-4 space-y-2">
-                              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Financial Breakdown</p>
-                              <FinRow label="Planning Income" value={row.planningIncome} dimmed={!row.scheduleValid} />
-                              <FinRow label={`Fixed Expenses (÷ ${contracts.length} project${contracts.length > 1 ? 's' : ''})`} value={-row.fixedExpenseShare} negative />
-                              <div className="border-t border-slate-100 pt-2">
-                                <FinRow label="Labor Budget" value={row.laborBudget} bold dimmed={!row.scheduleValid} />
-                              </div>
-                              <FinRow label="Developer Cost (actual)" value={-row.actualCost} negative />
-                              <div className="border-t border-slate-100 pt-2">
-                                {row.overrunKWD > 0 ? (
-                                  <div className="flex justify-between text-xs font-semibold text-red-600">
-                                    <span>Budget Overrun</span>
-                                    <span>{KWD(row.overrunKWD)}</span>
+                                {/* Schedule mismatch detail */}
+                                {!c.scheduleValid && (
+                                  <div className="md:col-span-2 flex items-start gap-2 p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700">
+                                    <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                                    <span>
+                                      Installment total ({KWD(c.installments.reduce((s, i) => s + Number(i.amount), 0))}) differs from
+                                      contract value ({KWD(c.totalValue)}) by{' '}
+                                      <strong>{KWD(Math.abs(c.scheduleDiff))}</strong>.
+                                      Correct this in <strong>Projects &amp; Contracts</strong>.
+                                    </span>
                                   </div>
-                                ) : (
-                                  <FinRow label="Remaining Budget" value={row.laborBudget - row.actualCost} bold dimmed={!row.scheduleValid} />
                                 )}
-                              </div>
-                            </div>
 
-                            {/* Hours */}
-                            <div className="bg-white rounded-xl border border-slate-100 p-4 space-y-2">
-                              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Hours &amp; Rate</p>
-                              <div className="flex justify-between text-xs text-slate-600">
-                                <span>Planning Rate</span>
-                                <span className="font-medium">{planningRate ? KWD(planningRate) + '/hr' : <span className="text-amber-500">Not set</span>}</span>
+                                {/* Income + collections card */}
+                                <div className="bg-white rounded-xl border border-slate-100 p-3 space-y-1.5">
+                                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Income This Month</p>
+                                  <div className={`flex justify-between text-xs ${!c.scheduleValid ? 'opacity-40' : 'text-slate-600'}`}>
+                                    <span>Planning Income</span>
+                                    <span className="font-medium">{KWD(c.planningIncome)}</span>
+                                  </div>
+                                  <div className="border-t border-slate-100 pt-2 mt-1">
+                                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Collections</p>
+                                    <div className="flex justify-between text-xs text-slate-600">
+                                      <span>Installments Due</span>
+                                      <span className="font-medium">{KWD(c.installmentsDue)}</span>
+                                    </div>
+                                    <div className="flex justify-between text-xs text-slate-600 mt-1">
+                                      <span>Payments Collected</span>
+                                      <span className="font-medium text-emerald-600">{KWD(c.paymentsCollected)}</span>
+                                    </div>
+                                  </div>
+                                </div>
                               </div>
-                              <div className="flex justify-between text-xs text-slate-600">
-                                <span>Break-even Cap</span>
-                                <span className="font-medium">
-                                  {!row.scheduleValid ? '—' : !row.rateAvailable ? '—' : `${row.hoursCap!.toFixed(1)} h`}
-                                </span>
-                              </div>
-                              <div className="flex justify-between text-xs text-slate-600">
-                                <span>Hours Logged</span>
-                                <span className="font-medium">{row.hoursLogged.toFixed(1)} h ({KWD(row.actualCost)})</span>
+                            ))}
+
+                            {/* Project-level financial summary (combined) */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                              <div className="bg-white rounded-xl border border-indigo-100 p-3 space-y-1.5">
+                                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Project Total</p>
+                                <FinRow label="Total Planning Income" value={row.planningIncome} dimmed={row.anyScheduleInvalid} />
+                                <FinRow
+                                  label={`Fixed Expenses (÷ ${projectRows.length} project${projectRows.length > 1 ? 's' : ''})`}
+                                  value={-row.fixedExpenseShare}
+                                  negative
+                                />
+                                <div className="border-t border-slate-100 pt-1.5">
+                                  <FinRow label="Labor Budget" value={row.laborBudget} bold dimmed={row.anyScheduleInvalid} />
+                                </div>
+                                <FinRow label="Developer Cost (actual)" value={-row.actualCost} negative />
+                                <div className="border-t border-slate-100 pt-1.5">
+                                  {row.overrunKWD > 0 ? (
+                                    <div className="flex justify-between text-xs font-semibold text-red-600">
+                                      <span>Budget Overrun</span>
+                                      <span>{KWD(row.overrunKWD)}</span>
+                                    </div>
+                                  ) : (
+                                    <FinRow label="Remaining Budget" value={row.laborBudget - row.actualCost} bold dimmed={row.anyScheduleInvalid} />
+                                  )}
+                                </div>
                               </div>
 
-                              <div className="border-t border-slate-100 pt-3 mt-3">
-                                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Collections</p>
+                              <div className="bg-white rounded-xl border border-indigo-100 p-3 space-y-1.5">
+                                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Hours &amp; Rate</p>
                                 <div className="flex justify-between text-xs text-slate-600">
-                                  <span>Installments Due</span>
-                                  <span className="font-medium">{KWD(row.installmentsDue)}</span>
+                                  <span>Planning Rate</span>
+                                  <span className="font-medium">
+                                    {planningRate
+                                      ? `${KWD(planningRate)}/hr`
+                                      : <span className="text-amber-500">Not set</span>}
+                                  </span>
                                 </div>
-                                <div className="flex justify-between text-xs text-slate-600 mt-1">
-                                  <span>Payments Collected</span>
-                                  <span className="font-medium text-emerald-600">{KWD(row.paymentsCollected)}</span>
+                                <div className="flex justify-between text-xs text-slate-600">
+                                  <span>Break-even Cap</span>
+                                  <span className="font-medium">
+                                    {row.anyScheduleInvalid || !row.rateAvailable ? '—' : `${row.hoursCap!.toFixed(1)} h`}
+                                  </span>
+                                </div>
+                                <div className="flex justify-between text-xs text-slate-600">
+                                  <span>Hours Logged</span>
+                                  <span className="font-medium">{row.hoursLogged.toFixed(1)} h ({KWD(row.actualCost)})</span>
+                                </div>
+                                <div className="flex justify-between text-xs text-slate-600">
+                                  <span>Hours Remaining</span>
+                                  <span className="font-medium">
+                                    {row.anyScheduleInvalid || !row.rateAvailable
+                                      ? '—'
+                                      : row.overrunKWD > 0
+                                      ? `0 h (overrun ${KWD(row.overrunKWD)})`
+                                      : `${row.hoursRemaining!.toFixed(1)} h`}
+                                  </span>
                                 </div>
                               </div>
                             </div>
+
                           </div>
                         </td>
                       </tr>
                     )}
-                  </>
+                  </Fragment>
                 ))}
               </tbody>
             </table>
@@ -464,11 +554,9 @@ export default function MonthlyDashboardPage() {
       )}
 
       {/* Others section */}
-      {(othersTotalHours > 0 || othersHours.length > 0) && (
+      {othersHours.length > 0 && (
         <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
-          <div className="flex items-center justify-between gap-4 mb-3">
-            <h2 className="font-semibold text-slate-700">Others (non-project hours)</h2>
-          </div>
+          <h2 className="font-semibold text-slate-700 mb-3">Others (non-project hours)</h2>
           <div className="flex gap-6 text-sm">
             <div>
               <p className="text-slate-500 text-xs mb-1">Total Hours</p>
@@ -496,19 +584,18 @@ export default function MonthlyDashboardPage() {
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <SummaryCard label="Planning Income" value={KWD(totalPlanningIncome)} sublabel="All active projects" color="indigo" />
-          <SummaryCard label="Fixed Expenses" value={KWD(totalFixedExpenses)} sublabel="Shared equally" color="slate" negative />
-          <SummaryCard label="Developer Cost" value={KWD(totalProjectDevCost + othersTotalCost)} sublabel={`Projects + Others`} color="amber" negative />
+          <SummaryCard label="Fixed Expenses" value={KWD(totalFixedExpenses)} sublabel="Shared equally" color="slate" />
+          <SummaryCard label="Developer Cost" value={KWD(totalProjectDevCost + othersTotalCost)} sublabel="Projects + Others" color="amber" />
           <SummaryCard
             label="Net Result"
             value={KWD(companyResult)}
-            sublabel={anyInvalidSchedule ? 'Incomplete' : (companyResult >= 0 ? 'Surplus' : 'Deficit')}
+            sublabel={anyInvalidSchedule ? 'Incomplete' : companyResult >= 0 ? 'Surplus' : 'Deficit'}
             color={anyInvalidSchedule ? 'slate' : companyResult >= 0 ? 'emerald' : 'red'}
           />
         </div>
 
         <div className="mt-4 pt-4 border-t border-slate-100">
           <div className="flex flex-wrap gap-6 text-sm">
-            {/* Fixed expense breakdown */}
             {expensePeriods.length > 0 && (
               <div>
                 <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Fixed Expenses Detail</p>
@@ -519,24 +606,24 @@ export default function MonthlyDashboardPage() {
                       <span className="font-medium">{KWD(Number(ep.amount))}/mo</span>
                     </div>
                   ))}
-                  {noActiveProjects && expensePeriods.length > 0 && (
+                  {noActiveProjects && (
                     <p className="text-xs text-slate-400 mt-1">No active projects — expenses shown at company level.</p>
                   )}
                 </div>
               </div>
             )}
 
-            {/* Cash collected */}
             <div>
               <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Cash Collected This Month</p>
               <p className="text-lg font-bold text-emerald-600">{KWD(totalCashCollected)}</p>
             </div>
 
-            {/* Rate info */}
             <div>
               <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Planning Rate</p>
               {planningRate ? (
-                <p className="text-sm font-medium text-slate-700">{KWD(planningRate)}/hr <span className="text-xs text-slate-400">(rate on last day of month)</span></p>
+                <p className="text-sm font-medium text-slate-700">
+                  {KWD(planningRate)}/hr <span className="text-xs text-slate-400">(rate on last day of month)</span>
+                </p>
               ) : (
                 <div className="flex items-center gap-1 text-xs text-amber-600">
                   <Info size={12} />
@@ -553,21 +640,21 @@ export default function MonthlyDashboardPage() {
 
 // ── Sub-components ──────────────────────────────────────────────────────────
 
-function FinRow({ label, value, negative, bold, dimmed }: {
+function FinRow({
+  label, value, negative, bold, dimmed,
+}: {
   label: string; value: number; negative?: boolean; bold?: boolean; dimmed?: boolean;
 }) {
-  const absVal = Math.abs(value);
-  const sign = negative || value < 0 ? '-' : '';
   return (
     <div className={`flex justify-between text-xs ${bold ? 'font-semibold text-slate-800' : 'text-slate-600'} ${dimmed ? 'opacity-40' : ''}`}>
       <span>{label}</span>
-      <span className={negative ? 'text-red-600' : ''}>{sign}{KWD(absVal)}</span>
+      <span className={negative ? 'text-red-600' : ''}>{negative ? '-' : ''}{KWD(Math.abs(value))}</span>
     </div>
   );
 }
 
-function SummaryCard({ label, value, sublabel, color, negative }: {
-  label: string; value: string; sublabel: string; color: string; negative?: boolean;
+function SummaryCard({ label, value, sublabel, color }: {
+  label: string; value: string; sublabel: string; color: string;
 }) {
   const colorMap: Record<string, string> = {
     indigo: 'bg-indigo-50 text-indigo-700',
